@@ -253,7 +253,7 @@ def main():
     
     loading_msg = "Loading market data..."
     if sort_by == "price_change":
-        loading_msg = "Loading market data and fetching 24h price changes (this may take a moment)..."
+        loading_msg = "Loading market data and fetching 24h price changes"
     
     with st.spinner(loading_msg):
         for category, display_name, _ in categories_config:
