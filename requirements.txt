@@ -1,0 +1,11 @@
+# Streamlit - Web framework for building the dashboard UI
+streamlit>=1.31.0
+
+# Requests - HTTP library for making API calls to Kalshi
+requests>=2.31.0
+
+# Pandas - Data manipulation and analysis
+pandas>=2.0.0
+
+# Plotly - Interactive charts (optional, for future enhancements)
+plotly>=5.18.0
