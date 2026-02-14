@@ -285,11 +285,18 @@ class KalshiClient:
             # Return empty if candlesticks not available
             return {"candlesticks": []}
     
-    def get_price_change_24h(self, series_ticker: str, market_ticker: str) -> int:
+    def get_price_change_24h(self, series_ticker: str, market_ticker: str, current_price: int = None) -> int:
         """
         Calculate the 24-hour price change for a market.
         
         Returns the price change in percentage points (e.g., +5 means price went up 5%).
+        
+        Args:
+            series_ticker: Series ticker for the market
+            market_ticker: Market ticker
+            current_price: Current price in cents (0-100). If provided, this is used as
+                          the "current" value instead of the candlestick close price,
+                          which may be stale or 0 for inactive markets.
         """
         from datetime import datetime, timedelta
         
@@ -311,15 +318,24 @@ class KalshiClient:
             candle = candlesticks[-1]
             price = candle.get("price", {})
             
-            # Calculate change from open to close, or use previous if available
+            # Get the price from 24h ago (use open or previous from the candlestick)
             open_price = price.get("open", 0) or 0
-            close_price = price.get("close", 0) or 0
             previous_price = price.get("previous", 0) or 0
             
-            if previous_price:
-                return close_price - previous_price
-            elif open_price:
-                return close_price - open_price
+            # Determine the price from 24h ago
+            # Prefer "previous" (prior candle's close) as it represents the starting point
+            # Fall back to "open" if previous is not available
+            price_24h_ago = previous_price if previous_price else open_price
+            
+            # Use provided current_price if available, otherwise fall back to candlestick close
+            if current_price is not None:
+                now_price = current_price
+            else:
+                now_price = price.get("close", 0) or 0
+            
+            # Calculate change: current price - price 24h ago
+            if price_24h_ago:
+                return now_price - price_24h_ago
         
         return 0
     
@@ -759,9 +775,12 @@ class KalshiClient:
                 for option in event_data.options:
                     if option.series_ticker and option.ticker:
                         try:
+                            # Pass current probability so we compare against actual current price,
+                            # not the candlestick close which may be stale/0 for inactive markets
                             change = self.get_price_change_24h(
                                 option.series_ticker, 
-                                option.ticker
+                                option.ticker,
+                                current_price=option.probability
                             )
                             option.price_change_24h = change
                             if abs(change) > abs(max_change):
