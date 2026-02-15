@@ -9,3 +9,7 @@ pandas>=2.0.0
 
 # Plotly - Interactive charts (optional, for future enhancements)
 plotly>=5.18.0
+
+# Python Telegram Bot - For the Telegram bot integration
+# [job-queue] extra required for scheduled daily updates (installs APScheduler)
+python-telegram-bot[job-queue]>=21.0
