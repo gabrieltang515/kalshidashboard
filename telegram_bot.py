@@ -28,8 +28,8 @@ from kalshi_client import get_client, EventData, MarketOption
 # Singapore Time (UTC+8)
 SGT = timezone(timedelta(hours=8))
 
-# Daily update time (12:00 PM SGT)
-DAILY_UPDATE_HOUR = 12
+# Daily update time (14:00 PM SGT)
+DAILY_UPDATE_HOUR = 15
 DAILY_UPDATE_MINUTE = 0
 
 
@@ -95,33 +95,34 @@ def format_event_message(events: list[EventData], category: str, sort_type: str)
     emoji = "🏛️" if category == "Politics" else "💰"
     sort_label = "24h Volume" if sort_type == "volume" else "24h Movers"
     
-    lines = [f"{emoji} *Top {len(events)} {category}* (by {sort_label})\n"]
+    lines = [f"{emoji} *Top {len(events)} {category}* \\(by {sort_label}\\)\n"]
     
     if not events:
-        lines.append("_No events found._")
+        lines.append("_No events found\\._")
         return "\n".join(lines)
     
     for i, event in enumerate(events, 1):
         # Event title
         # Escape special markdown characters in title
         title = escape_markdown(event.title)
-        lines.append(f"*{i}. {title}*")
+        lines.append(f"*{i}\\. {title}*")
         
         # Show top options for each event
         for option in event.options[:MAX_OPTIONS_PER_EVENT]:
             option_name = escape_markdown(option.name)
             
             if sort_type == "price_change" and option.price_change_24h != 0:
-                change_sign = "+" if option.price_change_24h > 0 else ""
-                change_str = f"{change_sign}{option.price_change_24h}%"
-                lines.append(f"  • {option_name}: {option.probability}% ({change_str})")
+                change_sign = "\\+" if option.price_change_24h > 0 else "\\-"
+                # Use abs() since we already have the sign prefix
+                change_str = f"{change_sign}{abs(option.price_change_24h)}%"
+                lines.append(f"  • {option_name}: {option.probability}% \\({change_str}\\)")
             else:
                 lines.append(f"  • {option_name}: {option.probability}%")
         
         # Show if there are more options
         remaining = len(event.options) - MAX_OPTIONS_PER_EVENT
         if remaining > 0:
-            lines.append(f"  _...and {remaining} more options_")
+            lines.append(f"  _\\.\\.\\.and {remaining} more options_")
         
         # Volume info
         lines.append(f"  📊 Vol: {event.total_volume:,}\n")
@@ -161,9 +162,11 @@ def format_full_update(politics: list[EventData], economics: list[EventData], so
         Complete formatted message
     """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    # Escape special characters in timestamp (hyphens and colons)
+    escaped_timestamp = escape_markdown(timestamp)
     sort_label = "24h Volume" if sort_type == "volume" else "Biggest Movers"
     
-    header = f"📊 *Kalshi Markets Update*\n_{timestamp}_ | Sorted by {sort_label}\n\n"
+    header = f"📊 *Kalshi Markets Update*\n_{escaped_timestamp}_ \\| Sorted by {sort_label}\n\n"
     
     politics_section = format_event_message(politics, "Politics", sort_type)
     economics_section = format_event_message(economics, "Economics", sort_type)
@@ -191,7 +194,7 @@ Get real\\-time prediction market data from Kalshi\\.
 /economics \\- Top 5 Economics markets only
 
 *Daily Updates:*
-/subscribe \\- Get daily updates at 12:00 PM SGT
+/subscribe \\- Get daily updates at 14:00 PM SGT
 /unsubscribe \\- Stop daily updates
 /status \\- Check subscription status
 
@@ -315,7 +318,7 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id in subscribed_chats:
         await update.message.reply_text(
             f"ℹ️ {chat_title} is already subscribed to daily updates\\!\n"
-            f"Updates are sent at 12:00 PM SGT\\.",
+            f"Updates are sent at 14:00 PM SGT\\.",
             parse_mode="MarkdownV2"
         )
         return
@@ -327,7 +330,7 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ *Subscribed\\!*\n\n"
         f"📍 Chat: {escape_markdown(chat_title)}\n"
         f"🆔 Chat ID: `{chat_id}`\n"
-        f"⏰ Daily updates at: *12:00 PM SGT*\n\n"
+        f"⏰ Daily updates at: *14:00 PM SGT*\n\n"
         f"You'll receive the top 5 biggest price movers in Politics & Economics\\.\n"
         f"Use /unsubscribe to stop\\.",
         parse_mode="MarkdownV2"
@@ -370,7 +373,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🆔 Chat ID: `{chat_id}`\n"
         f"📝 Type: {chat_type}\n"
         f"{status_emoji} Status: {status_text}\n\n"
-        f"_Use /subscribe to get daily updates at 12:00 PM SGT_",
+        f"_Use /subscribe to get daily updates at 14:00 PM SGT_",
         parse_mode="MarkdownV2"
     )
 
@@ -382,7 +385,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
     """
     Scheduled job that sends daily market updates to all subscribed chats.
-    Runs at 12:00 PM SGT.
+    Runs at 14:00 PM SGT.
     """
     if not subscribed_chats:
         print(f"[{datetime.now(SGT)}] No subscribed chats for daily update.")
@@ -486,7 +489,7 @@ def main():
     print("  /topmovers   - Top 5 biggest price movers in 24h")
     print("  /politics    - Top 5 Politics markets only")
     print("  /economics   - Top 5 Economics markets only")
-    print("  /subscribe   - Subscribe to daily updates (12:00 PM SGT)")
+    print("  /subscribe   - Subscribe to daily updates (14:00 PM SGT)")
     print("  /unsubscribe - Unsubscribe from daily updates")
     print("  /status      - Check subscription status")
     print("  /help        - Show help message")
