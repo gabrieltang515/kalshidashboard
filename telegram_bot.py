@@ -16,8 +16,8 @@ import os
 import json
 import asyncio
 from datetime import datetime, time, timezone, timedelta
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from kalshi_client import get_client, EventData, MarketOption
 
 
@@ -28,34 +28,58 @@ from kalshi_client import get_client, EventData, MarketOption
 # Singapore Time (UTC+8)
 SGT = timezone(timedelta(hours=8))
 
-# Daily update time (14:00 PM SGT)
-DAILY_UPDATE_HOUR = 15
-DAILY_UPDATE_MINUTE = 0
-
 
 # =============================================================================
 # SUBSCRIPTION STORAGE
 # =============================================================================
 
-# File to persist subscribed chat IDs (survives bot restarts)
+# File to persist subscribed chat data (survives bot restarts)
+# Format: {chat_id: {"hour": 16}, ...}
 SUBSCRIPTIONS_FILE = os.path.join(os.path.dirname(__file__), "subscribed_chats.json")
 
-def load_subscriptions() -> set:
-    """Load subscribed chat IDs from file."""
+# Default update hour for new subscriptions (8:00 AM SGT)
+DEFAULT_UPDATE_HOUR = 8
+
+def load_subscriptions() -> dict:
+    """Load subscribed chat data from file."""
     if os.path.exists(SUBSCRIPTIONS_FILE):
         try:
             with open(SUBSCRIPTIONS_FILE, "r") as f:
-                return set(json.load(f))
+                data = json.load(f)
+                # Migration: convert old format (list of chat_ids) to new format (dict with hour)
+                if isinstance(data, list):
+                    return {str(chat_id): {"hour": DEFAULT_UPDATE_HOUR} for chat_id in data}
+                # Ensure all keys are strings (JSON converts int keys to strings)
+                return {str(k): v for k, v in data.items()}
         except (json.JSONDecodeError, IOError):
-            return set()
-    return set()
+            return {}
+    return {}
 
-def save_subscriptions(chat_ids: set):
-    """Save subscribed chat IDs to file."""
+def save_subscriptions(chat_data: dict):
+    """Save subscribed chat data to file."""
     with open(SUBSCRIPTIONS_FILE, "w") as f:
-        json.dump(list(chat_ids), f)
+        json.dump(chat_data, f, indent=2)
 
-# Global set of subscribed chat IDs
+def get_chat_ids() -> set:
+    """Get set of all subscribed chat IDs."""
+    return set(int(chat_id) for chat_id in subscribed_chats.keys())
+
+def get_chats_for_hour(hour: int) -> list:
+    """Get list of chat IDs that should receive updates at the given hour."""
+    return [int(chat_id) for chat_id, data in subscribed_chats.items() if data.get("hour") == hour]
+
+def format_hour_display(hour: int) -> str:
+    """Format hour as 12-hour time string (e.g., '4:00 PM')."""
+    if hour == 0:
+        return "12:00 AM"
+    elif hour < 12:
+        return f"{hour}:00 AM"
+    elif hour == 12:
+        return "12:00 PM"
+    else:
+        return f"{hour - 12}:00 PM"
+
+# Global dict of subscribed chats {chat_id_str: {"hour": int}}
 subscribed_chats = load_subscriptions()
 
 
@@ -194,7 +218,8 @@ Get real\\-time prediction market data from Kalshi\\.
 /economics \\- Top 5 Economics markets only
 
 *Daily Updates:*
-/subscribe \\- Get daily updates at 14:00 PM SGT
+/subscribe \\- Get daily updates \\(default: 8:00 AM SGT\\)
+/settime \\- Choose your preferred update time
 /unsubscribe \\- Stop daily updates
 /status \\- Check subscription status
 
@@ -309,29 +334,34 @@ async def economics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handler for /subscribe command.
-    Subscribes the current chat to daily 8am market updates.
+    Subscribes the current chat to daily market updates.
     """
     chat_id = update.effective_chat.id
-    chat_type = update.effective_chat.type
+    chat_id_str = str(chat_id)
     chat_title = update.effective_chat.title or "this chat"
     
-    if chat_id in subscribed_chats:
+    if chat_id_str in subscribed_chats:
+        current_hour = subscribed_chats[chat_id_str].get("hour", DEFAULT_UPDATE_HOUR)
+        time_display = escape_markdown(format_hour_display(current_hour))
         await update.message.reply_text(
-            f"ℹ️ {chat_title} is already subscribed to daily updates\\!\n"
-            f"Updates are sent at 14:00 PM SGT\\.",
+            f"ℹ️ {escape_markdown(chat_title)} is already subscribed to daily updates\\!\n"
+            f"Updates are sent at *{time_display} SGT*\\.\n\n"
+            f"Use /settime to change the update time\\.",
             parse_mode="MarkdownV2"
         )
         return
     
-    subscribed_chats.add(chat_id)
+    subscribed_chats[chat_id_str] = {"hour": DEFAULT_UPDATE_HOUR}
     save_subscriptions(subscribed_chats)
     
+    time_display = escape_markdown(format_hour_display(DEFAULT_UPDATE_HOUR))
     await update.message.reply_text(
         f"✅ *Subscribed\\!*\n\n"
         f"📍 Chat: {escape_markdown(chat_title)}\n"
         f"🆔 Chat ID: `{chat_id}`\n"
-        f"⏰ Daily updates at: *14:00 PM SGT*\n\n"
-        f"You'll receive the top 5 biggest price movers in Politics & Economics\\.\n"
+        f"⏰ Daily updates at: *{time_display} SGT*\n\n"
+        f"You'll receive the top 5 markets by 24h volume in Politics & Economics\\.\n"
+        f"Use /settime to change the update time\\.\n"
         f"Use /unsubscribe to stop\\.",
         parse_mode="MarkdownV2"
     )
@@ -343,12 +373,13 @@ async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     Unsubscribes the current chat from daily updates.
     """
     chat_id = update.effective_chat.id
+    chat_id_str = str(chat_id)
     
-    if chat_id not in subscribed_chats:
+    if chat_id_str not in subscribed_chats:
         await update.message.reply_text("ℹ️ This chat is not subscribed to daily updates\\.", parse_mode="MarkdownV2")
         return
     
-    subscribed_chats.discard(chat_id)
+    del subscribed_chats[chat_id_str]
     save_subscriptions(subscribed_chats)
     
     await update.message.reply_text("✅ Unsubscribed from daily updates\\.", parse_mode="MarkdownV2")
@@ -360,20 +391,111 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Shows subscription status and chat info.
     """
     chat_id = update.effective_chat.id
+    chat_id_str = str(chat_id)
     chat_type = update.effective_chat.type
     chat_title = update.effective_chat.title or "Private Chat"
-    is_subscribed = chat_id in subscribed_chats
+    is_subscribed = chat_id_str in subscribed_chats
     
     status_emoji = "✅" if is_subscribed else "❌"
     status_text = "Subscribed" if is_subscribed else "Not subscribed"
+    
+    if is_subscribed:
+        current_hour = subscribed_chats[chat_id_str].get("hour", DEFAULT_UPDATE_HOUR)
+        time_display = escape_markdown(format_hour_display(current_hour))
+        time_line = f"⏰ Update time: *{time_display} SGT*\n"
+        footer = "_Use /settime to change update time_"
+    else:
+        time_line = ""
+        footer = "_Use /subscribe to get daily updates_"
     
     await update.message.reply_text(
         f"📊 *Chat Status*\n\n"
         f"📍 Chat: {escape_markdown(chat_title)}\n"
         f"🆔 Chat ID: `{chat_id}`\n"
         f"📝 Type: {chat_type}\n"
-        f"{status_emoji} Status: {status_text}\n\n"
-        f"_Use /subscribe to get daily updates at 14:00 PM SGT_",
+        f"{status_emoji} Status: {status_text}\n"
+        f"{time_line}\n"
+        f"{footer}",
+        parse_mode="MarkdownV2"
+    )
+
+
+async def settime_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handler for /settime command.
+    Shows an inline keyboard for users to select their preferred update time.
+    """
+    chat_id = update.effective_chat.id
+    chat_id_str = str(chat_id)
+    
+    if chat_id_str not in subscribed_chats:
+        await update.message.reply_text(
+            "⚠️ You need to subscribe first\\!\n"
+            "Use /subscribe to enable daily updates, then /settime to choose your preferred time\\.",
+            parse_mode="MarkdownV2"
+        )
+        return
+    
+    # Create inline keyboard with 24 hour options (4 columns x 6 rows)
+    keyboard = []
+    for row in range(6):  # 6 rows
+        row_buttons = []
+        for col in range(4):  # 4 columns
+            hour = row * 4 + col  # 0-23
+            label = format_hour_display(hour)
+            row_buttons.append(InlineKeyboardButton(label, callback_data=f"settime_{hour}"))
+        keyboard.append(row_buttons)
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    current_hour = subscribed_chats[chat_id_str].get("hour", DEFAULT_UPDATE_HOUR)
+    current_time = escape_markdown(format_hour_display(current_hour))
+    
+    await update.message.reply_text(
+        f"⏰ *Choose Your Daily Update Time*\n\n"
+        f"Current time: *{current_time} SGT*\n\n"
+        f"Select a new time below:",
+        reply_markup=reply_markup,
+        parse_mode="MarkdownV2"
+    )
+
+
+async def settime_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handler for settime inline keyboard button presses.
+    Updates the user's preferred update time.
+    """
+    query = update.callback_query
+    await query.answer()  # Acknowledge the button press
+    
+    chat_id = update.effective_chat.id
+    chat_id_str = str(chat_id)
+    
+    # Parse the hour from callback data (format: "settime_HH")
+    try:
+        hour = int(query.data.split("_")[1])
+        if hour < 0 or hour > 23:
+            raise ValueError("Invalid hour")
+    except (IndexError, ValueError):
+        await query.edit_message_text("❌ Invalid selection. Please try /settime again.")
+        return
+    
+    if chat_id_str not in subscribed_chats:
+        await query.edit_message_text(
+            "⚠️ You're no longer subscribed. Use /subscribe first.",
+        )
+        return
+    
+    # Update the hour
+    subscribed_chats[chat_id_str]["hour"] = hour
+    save_subscriptions(subscribed_chats)
+    
+    time_display = format_hour_display(hour)
+    
+    await query.edit_message_text(
+        f"✅ *Update Time Changed\\!*\n\n"
+        f"⏰ New time: *{escape_markdown(time_display)} SGT*\n\n"
+        f"You'll receive daily market updates at this time\\.",
         parse_mode="MarkdownV2"
     )
 
@@ -382,32 +504,37 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # SCHEDULED DAILY UPDATE
 # =============================================================================
 
-async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
+async def send_hourly_update(context: ContextTypes.DEFAULT_TYPE):
     """
-    Scheduled job that sends daily market updates to all subscribed chats.
-    Runs at 14:00 PM SGT.
+    Scheduled job that runs every hour and sends updates to chats
+    that have selected this hour for their daily update.
     """
-    if not subscribed_chats:
-        print(f"[{datetime.now(SGT)}] No subscribed chats for daily update.")
+    current_hour = datetime.now(SGT).hour
+    
+    # Get chats that should receive updates at this hour
+    chats_to_update = get_chats_for_hour(current_hour)
+    
+    if not chats_to_update:
+        print(f"[{datetime.now(SGT)}] No chats scheduled for {format_hour_display(current_hour)} SGT update.")
         return
     
-    print(f"[{datetime.now(SGT)}] Sending daily update to {len(subscribed_chats)} chat(s)...")
+    print(f"[{datetime.now(SGT)}] Sending {format_hour_display(current_hour)} SGT update to {len(chats_to_update)} chat(s)...")
     
     try:
         client = get_client()
         
-        # Fetch top movers (biggest price changes in 24h)
-        politics = client.get_top_events_by_category("Politics", top_n=TOP_N, sort_by="price_change")
-        economics = client.get_top_events_by_category("Economics", top_n=TOP_N, sort_by="price_change")
+        # Fetch top markets by 24h volume
+        politics = client.get_top_events_by_category("Politics", top_n=TOP_N, sort_by="volume")
+        economics = client.get_top_events_by_category("Economics", top_n=TOP_N, sort_by="volume")
         
         # Format the message
-        message = format_full_update(politics, economics, "price_change")
-        header = "📈 *Daily Market Update*\n\n"
+        message = format_full_update(politics, economics, "volume")
+        header = "📊 *Daily Market Update*\n\n"
         full_message = header + message
         
-        # Send to all subscribed chats
+        # Send to chats scheduled for this hour
         failed_chats = []
-        for chat_id in list(subscribed_chats):
+        for chat_id in chats_to_update:
             try:
                 await context.bot.send_message(
                     chat_id=chat_id,
@@ -424,10 +551,10 @@ async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
         if failed_chats:
             print(f"[{datetime.now(SGT)}] Failed to send to {len(failed_chats)} chat(s): {failed_chats}")
         
-        print(f"[{datetime.now(SGT)}] Daily update complete.")
+        print(f"[{datetime.now(SGT)}] Hourly update complete.")
         
     except Exception as e:
-        print(f"[{datetime.now(SGT)}] Error in daily update: {e}")
+        print(f"[{datetime.now(SGT)}] Error in hourly update: {e}")
 
 
 # =============================================================================
@@ -472,14 +599,25 @@ def main():
     app.add_handler(CommandHandler("subscribe", subscribe_command))
     app.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("settime", settime_command))
     
-    # Schedule daily update at 8:00 AM SGT
+    # Callback handler for settime inline keyboard
+    app.add_handler(CallbackQueryHandler(settime_callback, pattern="^settime_"))
+    
+    # Schedule hourly job to check and send updates
+    # Runs at the start of every hour (XX:00:00 SGT)
     job_queue = app.job_queue
-    daily_time = time(hour=DAILY_UPDATE_HOUR, minute=DAILY_UPDATE_MINUTE, second=0, tzinfo=SGT)
-    job_queue.run_daily(
-        send_daily_update,
-        time=daily_time,
-        name="daily_market_update"
+    
+    # Calculate time until next hour
+    now = datetime.now(SGT)
+    next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    seconds_until_next_hour = (next_hour - now).total_seconds()
+    
+    job_queue.run_repeating(
+        send_hourly_update,
+        interval=3600,  # Every hour (3600 seconds)
+        first=seconds_until_next_hour,  # Start at the next hour mark
+        name="hourly_market_update"
     )
     
     print("✅ Bot is running! Press Ctrl+C to stop.")
@@ -489,13 +627,22 @@ def main():
     print("  /topmovers   - Top 5 biggest price movers in 24h")
     print("  /politics    - Top 5 Politics markets only")
     print("  /economics   - Top 5 Economics markets only")
-    print("  /subscribe   - Subscribe to daily updates (14:00 PM SGT)")
+    print("  /subscribe   - Subscribe to daily updates")
+    print("  /settime     - Choose preferred update time (12 AM - 11 PM)")
     print("  /unsubscribe - Unsubscribe from daily updates")
     print("  /status      - Check subscription status")
     print("  /help        - Show help message")
     print()
-    print(f"📅 Daily updates scheduled for {DAILY_UPDATE_HOUR:02d}:{DAILY_UPDATE_MINUTE:02d} SGT")
+    print(f"📅 Hourly job scheduled (checks each hour for chats to update)")
     print(f"📋 Currently {len(subscribed_chats)} chat(s) subscribed")
+    if subscribed_chats:
+        # Show breakdown by hour
+        hours_breakdown = {}
+        for chat_id, data in subscribed_chats.items():
+            hour = data.get("hour", DEFAULT_UPDATE_HOUR)
+            hours_breakdown[hour] = hours_breakdown.get(hour, 0) + 1
+        for hour in sorted(hours_breakdown.keys()):
+            print(f"   - {format_hour_display(hour)} SGT: {hours_breakdown[hour]} chat(s)")
     print()
     
     # Start polling for updates
